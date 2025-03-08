@@ -49,8 +49,6 @@ export async function GET(request: Request) {
         gender: row[4] as 'Male' | 'Female',
         currentPartner: row[5] || undefined,
         narrativeDescription: row[6] || undefined,
-        x: 0,
-        y: 0,
       }
       familyData.push(familyMember);
 
@@ -62,8 +60,6 @@ export async function GET(request: Request) {
           parent1Name: row[1],
           parent2Name: row[2] || undefined,
           reproductionMethod: reproducedViaString,
-          x: 0,
-          y: 0,
         };
         familyData.push(rNode);
       }
@@ -71,10 +67,6 @@ export async function GET(request: Request) {
 
     // Transform the flat data into a hierarchical structure
     const hierarchicalData = transformDataToHierarchy(familyData);
-    console.log("Hierarchical data:", hierarchicalData.size);
-
-    // TODO: Transform the hierarchical data into a JSON-able object that
-    // can be used by the FamilyTree component
 
     return NextResponse.json({
       sheets: sheetNames,

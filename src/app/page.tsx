@@ -36,7 +36,6 @@ export default function Home() {
         setSheets(data.sheets);
         setCurrentSheet(data.currentSheet);
         setTreeData(data.data);
-        console.log("Tree data:", data.data);
       } else {
         console.error('Failed to fetch data:', data.error);
       }

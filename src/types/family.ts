@@ -1,7 +1,5 @@
 export interface FamilyTreeNode {
   id: string;
-  x: number;
-  y: number;
 }
 
 export interface FamilyMemberDataNode extends FamilyTreeNode {
@@ -20,21 +18,21 @@ export interface ReproductionDataNode extends FamilyTreeNode {
   reproductionMethod: string;
 } 
 
-export interface d3Node {
+export interface treeNode {
   id: string;
   x: number;
   y: number;
-  children?: d3Node[];
+  children?: treeNode[];
 }
 
-export interface d3ReproductionNode extends d3Node {
+export interface treeReproductionNode extends treeNode {
   parent1Name: string;
   parent2Name?: string;
   reproductionMethod: string;
-  children: d3FamilyMemberNode[];
+  children: treeFamilyMemberNode[];
 }
 
-export interface d3FamilyMemberNode extends d3Node {
+export interface treeFamilyMemberNode extends treeNode {
   name: string;
   parent1Name?: string;
   parent2Name?: string;
@@ -42,5 +40,5 @@ export interface d3FamilyMemberNode extends d3Node {
   gender: 'Male' | 'Female';
   currentPartner?: string;
   narrativeDescription?: string;
-  children: d3ReproductionNode[];
+  children: treeReproductionNode[];
 }

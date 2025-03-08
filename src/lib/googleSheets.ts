@@ -1,5 +1,5 @@
 import { google } from 'googleapis';
-import { FamilyMember } from '@/types/family';
+import { FamilyMemberDataNode } from '@/types/family';
 
 const auth = new google.auth.GoogleAuth({
   credentials: {
@@ -11,14 +11,12 @@ const auth = new google.auth.GoogleAuth({
 
 const sheets = google.sheets({ version: 'v4', auth });
 
-export async function getFamilyData(): Promise<FamilyMember[]> {
+export async function getFamilyData(): Promise<FamilyMemberDataNode[]> {
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: process.env.GOOGLE_SHEETS_SPREADSHEET_ID,
       range: `${process.env.GOOGLE_SHEETS_SHEET_NAME}!A2:G`,
     });
-
-    console.log(JSON.stringify(response.data));
 
     const rows = response.data.values;
     if (!rows) return [];
@@ -29,7 +27,7 @@ export async function getFamilyData(): Promise<FamilyMember[]> {
       parent1Name: row[1] || null,
       parent2Name: row[2] || null,
       reproducedVia: row[3] || null,
-      gender: (row[4] as 'Male' | 'Female' | 'Other') || 'Other',
+      gender: (row[4] as 'Male' | 'Female'),
       currentPartner: row[5] || null,
       narrativeDescription: row[6] || null,
     }));

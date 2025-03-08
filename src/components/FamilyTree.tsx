@@ -64,7 +64,6 @@ export default function FamilyTree({ data }: FamilyTreeProps) {
             // Include reproduction method in the key to ensure uniqueness
             const key = `${node.parent1Name}-${node.parent2Name || ''}-${node.reproductionMethod}`;
             reproNodesByParents.set(key, node);
-            console.log(key, node);
           }
         });
       });
