@@ -59,7 +59,7 @@ export default function Home() {
     <main className="flex min-h-screen flex-col items-center p-4 bg-gradient-to-br from-sky-100 via-emerald-50 to-green-100">
       <div className="w-full max-w-7xl">
         <h1 className={`${montserrat.className} text-4xl font-semibold text-center mb-8 text-emerald-600`}>
-          Anita's Sims 3 Family Tree Viewer
+          Anita&apos;s Sims 3 Family Tree Viewer
         </h1>
         
         {sheets.length > 0 && (
