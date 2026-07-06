@@ -1,424 +1,325 @@
 'use client'
 
-import { useEffect, useRef } from 'react';
-import cytoscape from 'cytoscape';
-import dagre from 'cytoscape-dagre';
-import { FamilyMemberDataNode, FamilyTreeNode, ReproductionDataNode } from '@/types/family';
-import { isFamilyMember, isReproductionNode } from '@/utils/transformData';
-
-// Register the dagre layout
-cytoscape.use(dagre);
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as d3 from 'd3';
+import { FamilyTreeNode } from '@/types/family';
+import {
+  computeFamilyLayout,
+  relatedToNode,
+  METHOD_COLORS,
+  FamilyLayout,
+  LayoutPerson,
+  LayoutUnion,
+} from '@/utils/familyLayout';
 
 interface FamilyTreeProps {
   data: { [key: string]: FamilyTreeNode[] };
 }
 
-// Define layout options type
-type DagreLayoutOptions = {
-  name: 'dagre';
-  rankDir: 'TB' | 'BT' | 'LR' | 'RL';
-  align?: 'UL' | 'UR' | 'DL' | 'DR';
-  spacingFactor: number;
-  nodeDimensionsIncludeLabels: boolean;
-  rankSep?: number;
-  nodeSep?: number;
-  edgeSep?: number;
-  animate: boolean;
-  animationDuration: number;
+const GENDER_COLORS = {
+  Male: { fill: '#dbeafe', border: '#2563eb' },
+  Female: { fill: '#fce7f3', border: '#db2777' },
+  Unknown: { fill: '#f1f5f9', border: '#64748b' },
 };
 
-// Define style types
-type NodeStyle = Partial<cytoscape.Css.Node>;
-type EdgeStyle = Partial<cytoscape.Css.Edge>;
-type StylesheetStyle = { selector: string; style: NodeStyle | EdgeStyle };
+const HIGHLIGHT_COLOR = '#059669';
+const EDGE_COLOR = '#94a3b8';
+const PERSON_RADIUS = 16;
+const UNION_RADIUS = 7;
+
+function genderColor(gender?: string) {
+  if (gender === 'Male') return GENDER_COLORS.Male;
+  if (gender === 'Female') return GENDER_COLORS.Female;
+  return GENDER_COLORS.Unknown;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function edgePath(sx: number, sy: number, tx: number, ty: number): string {
+  const my = (sy + ty) / 2;
+  return `M ${sx},${sy} C ${sx},${my} ${tx},${my} ${tx},${ty}`;
+}
 
 export default function FamilyTree({ data }: FamilyTreeProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const cyRef = useRef<cytoscape.Core | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const zoomRef = useRef<{
+    behavior: d3.ZoomBehavior<SVGSVGElement, unknown>;
+    initial: d3.ZoomTransform;
+  } | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  const layout = useMemo(() => computeFamilyLayout(data), [data]);
+
+  const legendMethods = useMemo(() => {
+    const present = new Set(layout.unions.map(u => u.methodLabel));
+    return Object.keys(METHOD_COLORS).filter(label => present.has(label));
+  }, [layout]);
+
+  // Build the scene whenever the layout changes
   useEffect(() => {
-    if (!data || !containerRef.current) return;
+    const svgEl = svgRef.current;
+    const containerEl = containerRef.current;
+    if (!svgEl || !containerEl) return;
 
-    try {
-      // Convert object to Map
-      const genMap = new Map<number, FamilyTreeNode[]>();
-      Object.entries(data).forEach(([genStr, nodes]) => {
-        const gen = parseInt(genStr, 10);
-        if (!isNaN(gen) && Array.isArray(nodes)) {
-          genMap.set(gen, nodes);
-        }
+    setSelectedId(null);
+
+    const svg = d3.select(svgEl);
+    svg.selectAll('*').remove();
+
+    const viewport = svg.append('g').attr('class', 'viewport');
+    const edgeGroup = viewport.append('g').attr('class', 'edges');
+    const unionGroup = viewport.append('g').attr('class', 'unions');
+    const personGroup = viewport.append('g').attr('class', 'persons');
+
+    const showTooltip = (event: MouseEvent, html: string) => {
+      const tooltip = tooltipRef.current;
+      if (!tooltip) return;
+      const rect = containerEl.getBoundingClientRect();
+      tooltip.innerHTML = html;
+      tooltip.style.display = 'block';
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      tooltip.style.left = x > rect.width - 280 ? `${x - 270}px` : `${x + 16}px`;
+      tooltip.style.top = `${Math.max(8, y - 16)}px`;
+    };
+    const hideTooltip = () => {
+      const tooltip = tooltipRef.current;
+      if (tooltip) tooltip.style.display = 'none';
+    };
+
+    edgeGroup
+      .selectAll('path')
+      .data(layout.edges, d => (d as FamilyLayout['edges'][number]).id)
+      .join('path')
+      .attr('class', 'edge')
+      .attr('data-id', d => d.id)
+      .attr('d', d => edgePath(d.sx, d.sy, d.tx, d.ty))
+      .attr('fill', 'none')
+      .attr('stroke', EDGE_COLOR)
+      .attr('stroke-width', 1.5);
+
+    const unionNodes = unionGroup
+      .selectAll('g')
+      .data(layout.unions, d => (d as LayoutUnion).id)
+      .join('g')
+      .attr('class', 'node union-node')
+      .attr('data-id', d => d.id)
+      .attr('transform', d => `translate(${d.x},${d.y})`)
+      .style('cursor', 'pointer');
+
+    // Invisible enlarged hit area so small nodes stay clickable when zoomed out
+    unionNodes
+      .append('circle')
+      .attr('r', UNION_RADIUS + 8)
+      .attr('fill', 'transparent');
+
+    unionNodes
+      .append('circle')
+      .attr('r', UNION_RADIUS)
+      .attr('fill', d => (METHOD_COLORS[d.methodLabel] ?? METHOD_COLORS['Other']).fill)
+      .attr('stroke', d => (METHOD_COLORS[d.methodLabel] ?? METHOD_COLORS['Other']).border)
+      .attr('stroke-width', 1.5);
+
+    unionNodes
+      .on('mouseenter', (event: MouseEvent, d) => {
+        showTooltip(event, `<div class="font-semibold">${escapeHtml(d.rawMethod)}</div>`);
+      })
+      .on('mousemove', (event: MouseEvent, d) => {
+        showTooltip(event, `<div class="font-semibold">${escapeHtml(d.rawMethod)}</div>`);
+      })
+      .on('mouseleave', hideTooltip)
+      .on('click', (event: MouseEvent, d) => {
+        event.stopPropagation();
+        setSelectedId(prev => (prev === d.id ? null : d.id));
       });
 
-      // Create maps for quick lookups
-      const nodesById = new Map<string, FamilyTreeNode>();
-      const nodesByName = new Map<string, FamilyMemberDataNode>();
-      const reproNodesByParents = new Map<string, ReproductionDataNode>();
+    const personNodes = personGroup
+      .selectAll('g')
+      .data(layout.persons, d => (d as LayoutPerson).id)
+      .join('g')
+      .attr('class', 'node person-node')
+      .attr('data-id', d => d.id)
+      .attr('transform', d => `translate(${d.x},${d.y})`)
+      .style('cursor', 'pointer');
 
-      // First pass: create nodes
-      genMap.forEach((nodes) => {
-        nodes.forEach(node => {
-          nodesById.set(node.id, node);
-          if (isFamilyMember(node)) {
-            nodesByName.set(node.name, node);
-          } else if (isReproductionNode(node)) {
-            // Include reproduction method in the key to ensure uniqueness
-            const key = `${node.parent1Name}-${node.parent2Name || ''}-${node.reproductionMethod}`;
-            reproNodesByParents.set(key, node);
-          }
-        });
+    personNodes
+      .append('circle')
+      .attr('r', PERSON_RADIUS + 10)
+      .attr('fill', 'transparent');
+
+    personNodes
+      .append('circle')
+      .attr('class', 'person-circle')
+      .attr('r', PERSON_RADIUS)
+      .attr('fill', d => genderColor(d.gender).fill)
+      .attr('stroke', d => genderColor(d.gender).border)
+      .attr('stroke-width', 2);
+
+    personNodes
+      .append('text')
+      .attr('y', PERSON_RADIUS + 15)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', 11)
+      .attr('fill', '#334155')
+      .attr('stroke', '#ffffff')
+      .attr('stroke-width', 3)
+      .attr('paint-order', 'stroke')
+      .text(d => d.name);
+
+    const personTooltip = (d: LayoutPerson) =>
+      `<div class="font-semibold mb-1">${escapeHtml(d.name)}</div>` +
+      (d.description ? `<div class="text-gray-600">${escapeHtml(d.description)}</div>` : '');
+
+    personNodes
+      .on('mouseenter', (event: MouseEvent, d) => showTooltip(event, personTooltip(d)))
+      .on('mousemove', (event: MouseEvent, d) => showTooltip(event, personTooltip(d)))
+      .on('mouseleave', hideTooltip)
+      .on('click', (event: MouseEvent, d) => {
+        event.stopPropagation();
+        setSelectedId(prev => (prev === d.id ? null : d.id));
       });
 
-      // Create Cytoscape elements
-      const elements: cytoscape.ElementDefinition[] = [];
+    // Clicking the background clears the selection
+    svg.on('click', () => setSelectedId(null));
 
-      // Add family member nodes
-      Array.from(nodesByName.values()).forEach(member => {
-        elements.push({
-          data: {
-            id: member.id,
-            label: member.name,
-            type: 'family',
-            gender: member.gender,
-            description: member.narrativeDescription
-          }
-        });
+    // Zoom / pan, starting fitted to the whole tree
+    const width = containerEl.clientWidth || 800;
+    const height = containerEl.clientHeight || 600;
+    const pad = 70;
+    const treeW = layout.maxX - layout.minX + pad * 2;
+    const treeH = layout.maxY - layout.minY + pad * 2;
+    const k = Math.min(width / treeW, height / treeH, 1);
+    const initial = d3.zoomIdentity
+      .translate(
+        (width - (layout.maxX - layout.minX) * k) / 2 - layout.minX * k,
+        (height - (layout.maxY - layout.minY) * k) / 2 - layout.minY * k
+      )
+      .scale(k);
+
+    const zoom = d3
+      .zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.05, 4])
+      .on('zoom', (event: d3.D3ZoomEvent<SVGSVGElement, unknown>) => {
+        viewport.attr('transform', event.transform.toString());
       });
 
-      // Add reproduction nodes and edges
-      Array.from(reproNodesByParents.values()).forEach(reproNode => {
-        const reproId = reproNode.id;
-        elements.push({
-          data: {
-            id: reproId,
-            label: reproNode.reproductionMethod,
-            type: 'reproduction'
-          }
-        });
+    svg.call(zoom);
+    svg.call(zoom.transform, initial);
+    zoomRef.current = { behavior: zoom, initial };
 
-        // Add edges from parents to reproduction node
-        if (reproNode.parent1Name) {
-          const parent1 = Array.from(nodesByName.values())
-            .find(n => n.name === reproNode.parent1Name);
-          if (parent1) {
-            elements.push({
-              data: {
-                id: `${parent1.id}-${reproId}`,
-                source: parent1.id,
-                target: reproId,
-                type: 'parent'
-              }
-            });
-          }
-        }
+    return () => {
+      hideTooltip();
+      svg.on('.zoom', null);
+      svg.on('click', null);
+      svg.selectAll('*').remove();
+    };
+  }, [layout]);
 
-        if (reproNode.parent2Name) {
-          const parent2 = Array.from(nodesByName.values())
-            .find(n => n.name === reproNode.parent2Name);
-          if (parent2) {
-            elements.push({
-              data: {
-                id: `${parent2.id}-${reproId}`,
-                source: parent2.id,
-                target: reproId,
-                type: 'parent'
-              }
-            });
-          }
-        }
+  // Apply highlighting whenever the selection changes
+  useEffect(() => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+    const svg = d3.select(svgEl);
 
-        // Add edges from reproduction node to children
-        Array.from(nodesByName.values())
-          .filter(n => 
-            // Match parent names AND reproduction method
-            ((n.parent1Name === reproNode.parent1Name && n.parent2Name === reproNode.parent2Name) ||
-            (n.parent1Name === reproNode.parent2Name && n.parent2Name === reproNode.parent1Name)) &&
-            n.reproducedVia === reproNode.reproductionMethod
-          )
-          .forEach(child => {
-            elements.push({
-              data: {
-                id: `${reproId}-${child.id}`,
-                source: reproId,
-                target: child.id,
-                type: 'child'
-              }
-            });
-          });
-      });
-
-      // Add reproduction nodes for current partners without children
-      const processedPartnerships = new Set<string>();
-      
-      Array.from(nodesByName.values()).forEach(member => {
-        if (member.currentPartner) {
-          const partner = Array.from(nodesByName.values())
-            .find(n => n.name === member.currentPartner);
-          
-          if (partner) {
-            // Create a unique key for this partnership (always in alphabetical order)
-            const [firstPartner, secondPartner] = [member.name, partner.name].sort();
-            const partnershipKey = `${firstPartner}-${secondPartner}`;
-
-            // Only process if we haven't seen this partnership before
-            if (!processedPartnerships.has(partnershipKey)) {
-              processedPartnerships.add(partnershipKey);
-
-              // Check if they already have a reproduction node together
-              const hasChildren = Array.from(reproNodesByParents.values())
-                .some(rNode => 
-                  (rNode.parent1Name === member.name && rNode.parent2Name === partner.name) ||
-                  (rNode.parent1Name === partner.name && rNode.parent2Name === member.name)
-                );
-
-              // Only add if they don't have children together
-              if (!hasChildren) {
-                // Create unique ID for this relationship
-                const relationshipId = `relationship-${partnershipKey}`;
-                
-                // Add the reproduction node
-                elements.push({
-                  data: {
-                    id: relationshipId,
-                    label: 'Dating or Married',
-                    type: 'reproduction'
-                  }
-                });
-
-                // Add edges from both partners to the reproduction node
-                elements.push({
-                  data: {
-                    id: `${member.id}-${relationshipId}`,
-                    source: member.id,
-                    target: relationshipId,
-                    type: 'parent'
-                  }
-                });
-
-                elements.push({
-                  data: {
-                    id: `${partner.id}-${relationshipId}`,
-                    source: partner.id,
-                    target: relationshipId,
-                    type: 'parent'
-                  }
-                });
-              }
-            }
-          }
-        }
-      });
-
-      // Initialize Cytoscape
-      const styles: StylesheetStyle[] = [
-        {
-          selector: 'node',
-          style: {
-            'label': 'data(label)',
-            'text-valign': 'center',
-            'text-halign': 'right',
-            'text-margin-x': 10,
-            'font-size': 12,
-            'text-wrap': 'wrap',
-            'text-max-width': 100,
-            'text-background-color': '#ffffff',
-            'text-background-opacity': 0.8,
-            'text-background-padding': '2px'
-          } as unknown as NodeStyle
-        },
-        {
-          selector: 'node[type = "family"]',
-          style: {
-            'width': 30,
-            'height': 30,
-            'background-color': (ele: cytoscape.NodeSingular) => 
-              ele.data('gender') === 'Male' ? '#dbeafe' : '#fce7f3',
-            'border-color': (ele: cytoscape.NodeSingular) => 
-              ele.data('gender') === 'Male' ? '#2563eb' : '#db2777',
-            'border-width': 2
-          } as NodeStyle
-        },
-        {
-          selector: 'node[type = "reproduction"]',
-          style: {
-            'width': 20,
-            'height': 20,
-            'background-color': (ele: cytoscape.NodeSingular) => {
-              switch (ele.data('label')) {
-                case 'Marriage':
-                  return '#7e22ce'; // dark purple
-                case 'Dating':
-                case 'Hookup':
-                  return '#e9d5ff'; // light purple
-                case 'Plant sim':
-                  return '#22c55e'; // green
-                case 'Clone':
-                  return '#fbbf24'; // warm yellow
-                case 'Adoption':
-                  return '#f97316'; // sunset orange
-                case 'Dating or Married':
-                  return '#c084fc'; // medium purple
-                default:
-                  return '#f3e8ff'; // default light purple
-              }
-            },
-            'border-color': (ele: cytoscape.NodeSingular) => {
-              switch (ele.data('label')) {
-                case 'Marriage':
-                  return '#581c87'; // darker purple
-                case 'Dating':
-                case 'Hookup':
-                  return '#a855f7'; // medium purple
-                case 'Plant sim':
-                  return '#15803d'; // darker green
-                case 'Clone':
-                  return '#b45309'; // darker yellow/amber
-                case 'Adoption':
-                  return '#c2410c'; // darker orange
-                case 'Dating or Married':
-                  return '#9333ea'; // darker medium purple
-                default:
-                  return '#6b21a8'; // default border color
-              }
-            },
-            'border-width': 2,
-            'font-size': 10
-          } as NodeStyle
-        },
-        {
-          selector: 'edge',
-          style: {
-            'curve-style': 'straight',
-            'target-arrow-shape': 'triangle',
-            'line-color': '#94a3b8',
-            'target-arrow-color': '#94a3b8',
-            'width': 2
-          } as EdgeStyle
-        }
-      ];
-
-      cyRef.current = cytoscape({
-        container: containerRef.current,
-        elements,
-        style: styles,
-        layout: {
-          name: 'dagre',
-          spacingFactor: 2,
-          nodeDimensionsIncludeLabels: true,
-          rankDir: 'TB',
-          rankSep: 120,
-          nodeSep: 80,
-          edgeSep: 50,
-          animate: true,
-          animationDuration: 500
-        } as DagreLayoutOptions,
-        wheelSensitivity: 0.2,
-      });
-
-      // Wait for layout to complete before fitting
-      const layout = cyRef.current.layout({
-        name: 'dagre',
-        spacingFactor: 1.8,
-        nodeDimensionsIncludeLabels: true,
-        rankDir: 'TB',
-        rankSep: 120,
-        nodeSep: 80,
-        edgeSep: 50,
-        animate: true,
-        animationDuration: 500,
-        fit: true,
-        stop: () => {
-          // After layout completes, ensure everything is visible
-          if (cyRef.current) {
-            // Fit with padding
-            const padding = 50;
-            const bb = cyRef.current.elements().boundingBox();
-            const zoom = Math.min(
-              containerRef.current!.clientWidth / (bb.w + 2 * padding),
-              containerRef.current!.clientHeight / (bb.h + 2 * padding)
-            );
-            
-            // Apply zoom and center
-            cyRef.current.zoom({
-              level: zoom,
-              renderedPosition: { 
-                x: containerRef.current!.clientWidth / 2, 
-                y: containerRef.current!.clientHeight / 2 
-              }
-            });
-            cyRef.current.center();
-          }
-        }
-      } as DagreLayoutOptions);
-
-      layout.run();
-
-      // Add tooltips
-      cyRef.current.on('mouseover', 'node', (event) => {
-        const node = event.target;
-        const description = node.data('description');
-        if (description) {
-          const tooltip = document.createElement('div');
-          tooltip.className = 'fixed bg-white/95 p-3 rounded-lg shadow-xl text-sm z-50 max-w-xs border border-gray-200';
-          tooltip.style.left = `${event.renderedPosition.x + 20}px`;
-          tooltip.style.top = `${event.renderedPosition.y - 20}px`;
-          tooltip.innerHTML = `
-            <div class="font-semibold mb-1">${node.data('label')}</div>
-            <div class="text-gray-600">${description}</div>
-          `;
-          // Add a subtle animation
-          tooltip.style.opacity = '0';
-          tooltip.style.transform = 'translateY(5px)';
-          tooltip.style.transition = 'all 0.2s ease-in-out';
-          
-          containerRef.current?.appendChild(tooltip);
-          node.data('tooltip', tooltip);
-          
-          // Trigger animation
-          requestAnimationFrame(() => {
-            tooltip.style.opacity = '1';
-            tooltip.style.transform = 'translateY(0)';
-          });
-        }
-      });
-
-      cyRef.current.on('mouseout', 'node', (event) => {
-        const node = event.target;
-        const tooltip = node.data('tooltip');
-        if (tooltip) {
-          // Add fade-out animation
-          tooltip.style.opacity = '0';
-          tooltip.style.transform = 'translateY(5px)';
-          setTimeout(() => tooltip.remove(), 200);
-          node.removeData('tooltip');
-        }
-      });
-
-      // Update font sizes on zoom
-      cyRef.current.on('zoom', () => {
-        const zoom = cyRef.current?.zoom() || 1;
-        cyRef.current?.style()
-          .selector('node')
-          .style({
-            'font-size': Math.floor(12 / zoom),
-            'text-margin-x': Math.floor(10 / zoom)
-          } as NodeStyle)
-          .update();
-      });
-
-    } catch (error) {
-      console.error('Error processing data:', error);
+    if (!selectedId) {
+      svg.selectAll<SVGGElement, unknown>('.node').attr('opacity', 1);
+      svg
+        .selectAll<SVGPathElement, unknown>('.edge')
+        .attr('stroke', EDGE_COLOR)
+        .attr('stroke-width', 1.5)
+        .attr('opacity', 1);
+      svg
+        .selectAll<SVGCircleElement, LayoutPerson>('.person-circle')
+        .attr('stroke', d => genderColor(d.gender).border)
+        .attr('stroke-width', 2);
+      return;
     }
 
-    // Cleanup
-    return () => {
-      if (cyRef.current) {
-        cyRef.current.destroy();
-        cyRef.current = null;
-      }
-    };
-  }, [data]);
+    const related = relatedToNode(layout, selectedId);
+
+    svg
+      .selectAll<SVGGElement, { id: string }>('.node')
+      .attr('opacity', d => (related.nodes.has(d.id) ? 1 : 0.15));
+
+    svg
+      .selectAll<SVGPathElement, { id: string }>('.edge')
+      .attr('stroke', d => (related.edges.has(d.id) ? HIGHLIGHT_COLOR : EDGE_COLOR))
+      .attr('stroke-width', d => (related.edges.has(d.id) ? 2.5 : 1.5))
+      .attr('opacity', d => (related.edges.has(d.id) ? 1 : 0.12));
+
+    svg
+      .selectAll<SVGCircleElement, LayoutPerson>('.person-circle')
+      .attr('stroke', d => (d.id === selectedId ? HIGHLIGHT_COLOR : genderColor(d.gender).border))
+      .attr('stroke-width', d => (d.id === selectedId ? 4 : 2));
+  }, [selectedId, layout]);
+
+  const resetView = () => {
+    setSelectedId(null);
+    const svgEl = svgRef.current;
+    const zoomState = zoomRef.current;
+    if (svgEl && zoomState) {
+      d3.select(svgEl)
+        .transition()
+        .duration(400)
+        .call(zoomState.behavior.transform, zoomState.initial);
+    }
+  };
 
   return (
-    <div ref={containerRef} className="w-full h-[800px] rounded-lg shadow-lg bg-white relative" />
+    <div
+      ref={containerRef}
+      className="w-full h-full rounded-lg shadow-lg bg-white relative overflow-hidden"
+    >
+      <svg ref={svgRef} className="w-full h-full block" />
+
+      <div
+        ref={tooltipRef}
+        className="absolute hidden bg-white/95 p-3 rounded-lg shadow-xl text-sm z-20 max-w-xs border border-gray-200 pointer-events-none"
+        style={{ display: 'none' }}
+      />
+
+      <div className="absolute top-3 left-3 z-10 bg-white/90 rounded-md shadow px-3 py-2 text-xs text-gray-600 pointer-events-none">
+        Click a sim to highlight their parents, partners &amp; children · scroll to zoom · drag to pan
+      </div>
+
+      <button
+        onClick={resetView}
+        className="absolute top-3 right-3 z-10 bg-white/90 hover:bg-white rounded-md shadow px-3 py-2 text-xs font-medium text-gray-700"
+      >
+        Reset view
+      </button>
+
+      <div className="absolute bottom-3 left-3 z-10 bg-white/90 rounded-md shadow px-3 py-2 text-xs text-gray-700">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="flex items-center gap-1.5">
+            <span
+              className="inline-block w-3 h-3 rounded-full border-2"
+              style={{ backgroundColor: GENDER_COLORS.Male.fill, borderColor: GENDER_COLORS.Male.border }}
+            />
+            Male
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span
+              className="inline-block w-3 h-3 rounded-full border-2"
+              style={{ backgroundColor: GENDER_COLORS.Female.fill, borderColor: GENDER_COLORS.Female.border }}
+            />
+            Female
+          </span>
+          {legendMethods.map(label => (
+            <span key={label} className="flex items-center gap-1.5">
+              <span
+                className="inline-block w-2.5 h-2.5 rounded-full"
+                style={{ backgroundColor: METHOD_COLORS[label].fill }}
+              />
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
   );
-} 
+}

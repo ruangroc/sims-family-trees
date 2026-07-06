@@ -1,6 +1,10 @@
 # Anita's Sims 3 Family Tree Viewer
 
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app) created using Cursor.
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app) created using Cursor, and later, Claude Code.
+
+## Visualization
+
+The family tree is rendered with a custom D3 layout (`src/utils/familyLayout.ts` + `src/components/FamilyTree.tsx`): each generation is a row, couples sit side by side with a colored "union" node for how they reproduced, and children are centered beneath their parents. Click a sim to highlight their parents, partners, and children; scroll to zoom and drag to pan.
 
 ## Getting Started
 
